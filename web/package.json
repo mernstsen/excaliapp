@@ -1,0 +1,17 @@
+{
+  "name": "excaliapp-web",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Excalidraw canvas bundled for ExcaliApp's WKWebView.",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "@excalidraw/excalidraw": "0.18.1",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}
