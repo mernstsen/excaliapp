@@ -29,6 +29,10 @@ struct ContentView: View {
             )
             .navigationSplitViewColumnWidth(min: 190, ideal: 230, max: 340)
         } detail: {
+            // Deliberately no ignoresSafeArea: macOS floats the sidebar as
+            // glass over full-width detail content, and the safe area is what
+            // keeps Excalidraw's own edge panels — stroke, background, fill —
+            // from ending up underneath it.
             ExcalidrawCanvas(webView: bridge.webView)
                 .opacity(selection == nil ? 0 : 1)
                 .overlay {
@@ -42,7 +46,6 @@ struct ContentView: View {
                         }
                     }
                 }
-                .ignoresSafeArea()
         }
         .navigationTitle(bridge.current?.name ?? "ExcaliApp")
         .navigationSubtitle(statusDescription)
