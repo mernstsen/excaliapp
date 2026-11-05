@@ -1,21 +1,18 @@
 // Bundles Excalidraw into ExcaliApp/Web.bundle, which Xcode copies into the
-// app as a single resource folder. Run `npm run build` after changing web/src
-// or bumping @excalidraw/excalidraw.
+// app as a single resource folder, and regenerates THIRD-PARTY-NOTICES.md so
+// the notices always describe the bundle that sits beside them.
+// Run `npm run build` after changing web/src or bumping @excalidraw/excalidraw.
 import * as esbuild from "esbuild";
-import { cp, mkdir, rm, readdir } from "node:fs/promises";
+import { cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
-const out = path.join(root, "..", "ExcaliApp", "Web.bundle");
-const dist = path.join(
-  root,
-  "node_modules",
-  "@excalidraw",
-  "excalidraw",
-  "dist",
-  "prod",
-);
+const repo = path.join(root, "..");
+const out = path.join(repo, "ExcaliApp", "Web.bundle");
+const dist = path.join(root, "node_modules", "@excalidraw", "excalidraw", "dist", "prod");
+const fontLicenses = path.join(root, "font-licenses");
+const modules = path.join(root, "node_modules");
 
 // Xiaolai is a 12 MB CJK face; the other eight cover Excalidraw's own UI and
 // every default font family. Set EXCALIAPP_ALL_FONTS=1 to ship it too.
@@ -24,7 +21,7 @@ const skipFonts = process.env.EXCALIAPP_ALL_FONTS ? [] : ["Xiaolai"];
 await rm(out, { recursive: true, force: true });
 await mkdir(out, { recursive: true });
 
-await esbuild.build({
+const result = await esbuild.build({
   entryPoints: [path.join(root, "src", "main.jsx")],
   outfile: path.join(out, "app.js"),
   bundle: true,
@@ -32,7 +29,11 @@ await esbuild.build({
   format: "iife",
   target: ["safari18"],
   jsx: "automatic",
-  legalComments: "none",
+  // Keep the @license banners: MIT, BSD and ISC all require the copyright
+  // notice to travel with redistributed copies, and app.js is a redistributed
+  // copy of every dependency below.
+  legalComments: "eof",
+  metafile: true,
   // The package's "." and "./index.css" subpaths are condition-gated.
   conditions: ["production"],
   define: { "process.env.NODE_ENV": '"production"' },
@@ -44,15 +45,119 @@ await esbuild.build({
 
 await cp(path.join(root, "src", "index.html"), path.join(out, "index.html"));
 
+// Fonts, each with its licence alongside — the SIL Open Font License requires
+// the licence to be distributed with the font files it covers.
+const shipped = [];
 for (const family of await readdir(path.join(dist, "fonts"))) {
   if (skipFonts.includes(family)) {
     continue;
   }
-  await cp(
-    path.join(dist, "fonts", family),
-    path.join(out, "fonts", family),
-    { recursive: true },
-  );
+  await cp(path.join(dist, "fonts", family), path.join(out, "fonts", family), {
+    recursive: true,
+  });
+
+  let licences = [];
+  try {
+    licences = await readdir(path.join(fontLicenses, family));
+  } catch {
+    licences = [];
+  }
+  for (const file of licences) {
+    await cp(
+      path.join(fontLicenses, family, file),
+      path.join(out, "fonts", family, file),
+    );
+  }
+  shipped.push({ family, licences });
 }
 
-console.log(`built -> ${path.relative(path.join(root, ".."), out)}`);
+await writeFile(path.join(repo, "THIRD-PARTY-NOTICES.md"), await notices(result, shipped));
+
+console.log(`built -> ${path.relative(repo, out)}`);
+for (const { family, licences } of shipped) {
+  if (licences.length === 0) {
+    console.log(`  note: ${family} ships no licence file`);
+  }
+}
+
+/// Lists exactly what ended up inside app.js, read back from esbuild's own
+/// record of the build rather than from package.json's dependency list.
+async function notices(build, fonts) {
+  const bundle = Object.keys(build.metafile.outputs).find((f) => f.endsWith("app.js"));
+  const names = new Set();
+  for (const input of Object.keys(build.metafile.outputs[bundle].inputs)) {
+    const match = input.match(/node_modules\/((?:@[^/]+\/)?[^/]+)\//);
+    if (match) {
+      names.add(match[1]);
+    }
+  }
+
+  const packages = [];
+  for (const name of [...names].sort()) {
+    const manifest = JSON.parse(
+      await readFile(path.join(modules, name, "package.json"), "utf8"),
+    );
+    let licence = manifest.license ?? manifest.licenses ?? "see package";
+    if (Array.isArray(licence)) {
+      licence = licence.map((l) => l.type ?? l).join(" OR ");
+    } else if (typeof licence === "object") {
+      licence = licence.type ?? "see package";
+    }
+
+    let text = null;
+    for (const file of await readdir(path.join(modules, name))) {
+      if (/^(licen[cs]e|copying)/i.test(file)) {
+        const candidate = path.join(modules, name, file);
+        try {
+          text = await readFile(candidate, "utf8");
+          break;
+        } catch {
+          // a LICENSE directory rather than a file
+        }
+      }
+    }
+    packages.push({ name, version: manifest.version, licence, text });
+  }
+
+  const lines = [
+    "# Third-Party Notices",
+    "",
+    "ExcaliApp embeds Excalidraw and its dependencies. This file is generated by",
+    "`web/build.mjs`; rerun `npm --prefix web run build` to refresh it.",
+    "",
+    "ExcaliApp is not affiliated with, endorsed by, or sponsored by Excalidraw.",
+    "",
+    "## Fonts",
+    "",
+    "Shipped in `ExcaliApp/Web.bundle/fonts/`, each with its licence alongside.",
+    "",
+    "| Family | Licence file |",
+    "| --- | --- |",
+    ...fonts.map(
+      ({ family, licences }) =>
+        `| ${family} | ${licences.length ? licences.join(", ") : "_none — see README_"} |`,
+    ),
+    "",
+    `## Bundled JavaScript (${packages.length} packages)`,
+    "",
+    "Compiled into `ExcaliApp/Web.bundle/app.js`.",
+    "",
+    "| Package | Version | Licence |",
+    "| --- | --- | --- |",
+    ...packages.map((p) => `| ${p.name} | ${p.version} | ${p.licence} |`),
+    "",
+    "## Full licence texts",
+    "",
+  ];
+
+  for (const p of packages) {
+    lines.push(`### ${p.name} ${p.version} — ${p.licence}`, "");
+    lines.push(
+      p.text
+        ? "```\n" + p.text.trim() + "\n```"
+        : `_The published package contains no licence file. Declared as \`${p.licence}\` in its package.json._`,
+      "",
+    );
+  }
+  return lines.join("\n");
+}
